@@ -4,7 +4,7 @@ from collections import defaultdict
 from multiprocessing import Pool, freeze_support
 from functools import partial
 import random
-
+from timeit import default_timer as timer
 
 def adact_h(dataset, delta, horizon, actions, observations, rewards, g_index = 3, chi_index=None):
     """
@@ -22,7 +22,10 @@ def adact_h(dataset, delta, horizon, actions, observations, rewards, g_index = 3
         transitions: Transition function mapping (state, action-observation) pairs to next states.
     """
     g = generate_g(g_index, actions, observations, rewards)
-    
+    if chi_index is None:
+        all_chi = generate_chi(horizon, len(g))
+    else:
+        all_chi = generate_chi(min(horizon, chi_index), len(g))
 
     # Initialize variables
     u0 = "u0"  # Initial state
@@ -35,18 +38,19 @@ def adact_h(dataset, delta, horizon, actions, observations, rewards, g_index = 3
     Z_suffixes[u0] = dataset
 
     # Iterate over time steps
-    for t in range(horizon):
+    for t in range(horizon+1):
         print("Loop",t)
         if chi_index is None:
-            chi = generate_chi(horizon-t, len(g))
+            chi = all_chi[:horizon-t+1]
         else:
-            chi = generate_chi(min(horizon-t, chi_index), len(g))
+            chi = all_chi[:min(horizon-t, chi_index)+1]
 
         U_candidate_states = set()  # Candidate states at the next level
         next_suffixes = defaultdict(list)
-
+        time1 = timer()
         # Generate candidates for the next states
         for s in U_states[t]:
+            simplesuffixes = [x[1:] for x in Z_suffixes[s]]
             for (a, o) in [(a, o) for a in actions for o in observations]:
                 candidate_state = (s,a,o)
                 U_candidate_states.add(candidate_state)
@@ -54,11 +58,12 @@ def adact_h(dataset, delta, horizon, actions, observations, rewards, g_index = 3
                 for episode in dataset:
                     if check_transition(s, episode, tau_transitions, t):
                         ao, suffix = episode[t][:2], episode[t + 1:]
-                        if ao == (a, o) and (suffix in [x[1:] for x in Z_suffixes[s]] or (suffix == [] and any(len(x)==x for x in Z_suffixes[s]))):
+                        if ao == (a, o) and (suffix in simplesuffixes or (suffix == [] and any(len(x)==x for x in Z_suffixes[s]))):
                             next_suffixes[candidate_state].append(suffix)
                 if candidate_state not in next_suffixes:
                     U_candidate_states.remove(candidate_state)
-
+        time2 = timer()
+        print("Time taken to generate candidates:", time2-time1)
         uaom = max(next_suffixes, key= lambda x: len(next_suffixes[x]))
         promoted_states = {uaom}
         tau_transitions[(uaom[0], uaom[1:])] = uaom
@@ -66,6 +71,7 @@ def adact_h(dataset, delta, horizon, actions, observations, rewards, g_index = 3
         print(uaom, "uaom,", U_candidate_states, "candidates")
         # Promote and merge candidate states
         for candidate in U_candidate_states:
+            time1 = timer()
             is_promoted = True
             # Compare with already promoted states
             for existing_state in promoted_states:
@@ -80,9 +86,8 @@ def adact_h(dataset, delta, horizon, actions, observations, rewards, g_index = 3
             if is_promoted:
                 promoted_states.add(candidate)
                 tau_transitions.update({(candidate[0], candidate[1:]): candidate})
-                print(candidate,"promoted")
-            else:
-                print(candidate,"merged")
+            time2 = timer()
+            print("Time taken to compare:", time2-time1)
 
         # Update states and suffixes for the next iteration
         U_states.append(promoted_states)
@@ -123,8 +128,7 @@ def generate_chi(l, g):
         for i in range(g**k):
             somelists = tuple(i//g**(x-1) % g for x in range(k,0, -1))
             newg.append(somelists)
-        chi += newg
-    print(len(chi))
+        chi.append(newg)
     return chi
 
 def test_distinct(suffixes1, suffixes2, delta, t, horizon, chi, g):
@@ -145,8 +149,8 @@ def test_distinct(suffixes1, suffixes2, delta, t, horizon, chi, g):
     # Calculate Lp-infinity distance between the two sets of suffixes
     distance = l_x_distance(suffixes1, suffixes2, chi, g)
     # Threshold for distinguishing states
-    threshold = math.sqrt(2 * math.log(2 * ((len(g)**(horizon-t + 1) - 1) // (len(g)-1)-1) / delta) / min(len(suffixes1), len(suffixes2)))
-    print(distance, threshold)
+    threshold = math.sqrt(2 * math.log(2 * sum(len(x) for x in chi) / delta) / min(len(suffixes1), len(suffixes2)))
+    print(distance, threshold, distance >= threshold)
     return distance >= threshold
 
 
@@ -176,37 +180,40 @@ def l_x_distance(suffixes1, suffixes2, chi, g):
     max_diff = 0
     args = [probs1,probs2]
     func = partial(getprobs, arrayg, chi)
-    results = pool.map(func, args)
-    # results = [getprobs(arrayg, chi, x) for x in args]
+    results = [getprobs(arrayg, chi, x) for x in args]
+    # for p, o, c in zip(results[0], results[1], chi[0]):
+    #     print(p, o, arrayg[c[0]])
     max_diff = max([abs(p-o) for p, o in zip(results[0], results[1])])
     return max_diff
 
 def getprobs(arrayg, chi, probs_i):
     probs = []
-    for x in chi:
-        prob = 0
-        for s in probs_i:
-            i = 0
-            for aor in s:
-                if aor in arrayg[x[i]]:
-                    i +=1
-                if i == len(x):
-                    prob += probs_i[tuple(s)]
-                    break
-        probs.append(prob)
+    for time in chi:
+        for x in time:
+            prob = 0
+            for s in probs_i:
+                i = 0
+                for aor in s:
+                    if aor in arrayg[x[i]]:
+                        i +=1
+                    if i == len(x):
+                        prob += probs_i[tuple(s)]
+                        break
+            probs.append(prob)
     return probs
 
 
 
 if __name__ == "__main__":
-    freeze_support()
-    pool = Pool(2)
+    horizon = 5  # Maximum length of an episode
+    delta = 0.01  # Failure probability
 
     dataset = []
-    with open('basic.txt', 'r') as f:
+    with open('tmaze25x5x1.txt', 'r') as f:
         for line in f:
             episode = eval(line.strip())
-            dataset.append(episode)
+            for i in range(len(episode)-horizon):
+                dataset.append(episode[i:i+horizon+1])
 
     # actions = [0, 1]  # Two possible actions
     # observations = ['x', 'y']  # Three possible observations
@@ -223,7 +230,7 @@ if __name__ == "__main__":
     #     (rewards[j % 2], 'o0', 0)] for i in range(2*2) for j in range(2*2*2)
     # ] 
     # dataset = []
-    # for i in range(100):
+    # for i in range(1000):
     #     dataset.append(random.choice(data))
     # with open('basic.txt', 'w') as f:
     #     for episode in dataset:
@@ -239,16 +246,13 @@ if __name__ == "__main__":
             rewards.add(step[2])
     print(actions, observations, rewards)
 
-    horizon = 3  # Maximum length of an episode
-    delta = 0.01  # Failure probability
+    
 
-    states, transitions = adact_h(dataset, delta, horizon, actions, observations, rewards)
+    states, transitions = adact_h(dataset, delta, horizon, actions, observations, rewards, chi_index=1)
     print("States:")
     for statet in states:
         for state in statet:
-            print(state)
+            print('"'+str(state)+'"')
     print("Transitions:")
     for key, value in transitions.items():
-        print(key, "->", value)
-
-    pool.close()
+        print('"'+str(key[0])+'"', '"'+str(value)+'"', '"'+str(key[1])+'"')
