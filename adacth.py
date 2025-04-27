@@ -1,7 +1,6 @@
 import math
 from collections import defaultdict
 
-from multiprocessing import Pool, freeze_support
 from functools import partial
 import random
 from timeit import default_timer as timer
@@ -51,43 +50,55 @@ def adact_h(dataset, delta, horizon, actions, observations, rewards, g_index = 3
         # Generate candidates for the next states
         for s in U_states[t]:
             simplesuffixes = [x[1:] for x in Z_suffixes[s]]
-            for (a, o) in [(a, o) for a in actions for o in observations]:
-                candidate_state = (s,a,o)
-                U_candidate_states.add(candidate_state)
-                # Collect suffixes corresponding to the candidate state
-                for episode in dataset:
-                    if check_transition(s, episode, tau_transitions, t):
-                        ao, suffix = episode[t][:2], episode[t + 1:]
-                        if ao == (a, o) and (suffix in simplesuffixes or (suffix == [] and any(len(x)==x for x in Z_suffixes[s]))):
-                            next_suffixes[candidate_state].append(suffix)
-                if candidate_state not in next_suffixes:
-                    U_candidate_states.remove(candidate_state)
+            for episode in dataset:
+                if check_transition(s, episode, tau_transitions, t):
+                    a, o, suffix = episode[t][0], episode[t][1], episode[t + 1:]
+                    if (suffix in simplesuffixes or (suffix == [] and any(len(x)==x for x in Z_suffixes[s]))):
+                        next_suffixes[(s,a,o)].append(suffix)
+        U_candidate_states = set(next_suffixes.keys())
+
+            # for (a, o) in [(a, o) for a in actions for o in observations]:
+            #     candidate_state = (s,a,o)
+            #     U_candidate_states.add(candidate_state)
+            #     # Collect suffixes corresponding to the candidate state
+            #     for episode in dataset:
+            #         if check_transition(s, episode, tau_transitions, t):
+            #             ao, suffix = episode[t][:2], episode[t + 1:]
+            #             if ao == (a, o) and (suffix in simplesuffixes or (suffix == [] and any(len(x)==x for x in Z_suffixes[s]))):
+            #                 next_suffixes[candidate_state].append(suffix)
+            #     if candidate_state not in next_suffixes:
+            #         U_candidate_states.remove(candidate_state)
+            
         time2 = timer()
         print("Time taken to generate candidates:", time2-time1)
         uaom = max(next_suffixes, key= lambda x: len(next_suffixes[x]))
         promoted_states = {uaom}
         tau_transitions[(uaom[0], uaom[1:])] = uaom
         U_candidate_states.remove(uaom)
-        print(uaom, "uaom,", U_candidate_states, "candidates")
+        print(uaom, "uaom,", len(U_candidate_states), "candidates")
         # Promote and merge candidate states
+        time1 = timer()
+
+        probs = suffix_probs(promoted_states, U_candidate_states, next_suffixes)
+
         for candidate in U_candidate_states:
-            time1 = timer()
+            
             is_promoted = True
             # Compare with already promoted states
             for existing_state in promoted_states:
-                print(candidate, "compared to", existing_state)
-                if not test_distinct(next_suffixes[candidate], next_suffixes[existing_state], delta, t, horizon, chi, g):
+                if not test_distinct(probs[candidate], probs[existing_state], delta, t, horizon, chi, g):
                     # Merge candidate into existing state
                     is_promoted = False
                     tau_transitions.update({(candidate[0], candidate[1:]): existing_state})
                     next_suffixes[existing_state].extend(next_suffixes[candidate])
+                    probs = update_suffix_probs(candidate, existing_state, probs)
                     break
 
             if is_promoted:
                 promoted_states.add(candidate)
                 tau_transitions.update({(candidate[0], candidate[1:]): candidate})
-            time2 = timer()
-            print("Time taken to compare:", time2-time1)
+        time2 = timer()
+        print("Time taken to compare:", time2-time1)
 
         # Update states and suffixes for the next iteration
         U_states.append(promoted_states)
@@ -97,6 +108,9 @@ def adact_h(dataset, delta, horizon, actions, observations, rewards, g_index = 3
     return U_states, tau_transitions
 
 def generate_g(g_index, actions, observations, rewards):
+    actions = set(actions)
+    actions.discard('a0')
+    observations.discard('o0')
     ga = set([tuple((a, o, r) for o in observations for r in rewards) for a in actions])
     go = set([tuple((a, o, r) for a in actions for r in rewards) for o in observations])
     gr = set([tuple((a, o, r) for a in actions for o in observations) for r in rewards])
@@ -131,7 +145,7 @@ def generate_chi(l, g):
         chi.append(newg)
     return chi
 
-def test_distinct(suffixes1, suffixes2, delta, t, horizon, chi, g):
+def test_distinct(probs1, probs2, delta, t, horizon, chi, g):
     """
     Statistical test to determine if two states are distinct.
 
@@ -147,14 +161,35 @@ def test_distinct(suffixes1, suffixes2, delta, t, horizon, chi, g):
         True if the states are distinct, False otherwise.
     """
     # Calculate Lp-infinity distance between the two sets of suffixes
-    distance = l_x_distance(suffixes1, suffixes2, chi, g)
+    distance = l_x_distance(probs1[0], probs2[0], chi, g)
     # Threshold for distinguishing states
-    threshold = math.sqrt(2 * math.log(2 * sum(len(x) for x in chi) / delta) / min(len(suffixes1), len(suffixes2)))
-    print(distance, threshold, distance >= threshold)
+    threshold = math.sqrt(2 * math.log(2 * sum(len(x) for x in chi) / delta) / min(probs1[1], probs2[1]))
     return distance >= threshold
 
+def suffix_probs(promoted_states, U_candidate_states, next_suffixes):
+    probs = {}
+    for state in promoted_states:
+        probs[state] = [defaultdict(int), len(next_suffixes[state])]
+        for suffix in next_suffixes[state]:
+            probs[state][0][tuple(suffix)] += 1/len(next_suffixes[state])
+    for state in U_candidate_states:
+        probs[state] = [defaultdict(int), len(next_suffixes[state])]
+        for suffix in next_suffixes[state]:
+            probs[state][0][tuple(suffix)] += 1/len(next_suffixes[state])
+    return probs
 
-def l_x_distance(suffixes1, suffixes2, chi, g):
+def update_suffix_probs(candidate, existing_state, probs):
+    # Update the suffix probabilities for the existing state
+    for suffix in probs[candidate][0]:
+        probs[existing_state][0][tuple(suffix)] += (probs[candidate][0][tuple(suffix)]*probs[existing_state][1] - 
+                                                    probs[existing_state][0][tuple(suffix)]*probs[candidate][1]) / (probs[existing_state][1]*(probs[existing_state][1] + probs[candidate][1]))
+    # Update the count of suffixes for the existing state
+    probs[existing_state][1] += probs[candidate][1]
+    # Remove the candidate state from the dictionary    
+    del probs[candidate]
+    return probs
+
+def l_x_distance(probs1, probs2, chi, g):
     """
     Compute the L_x distance between two sets of suffixes.
 
@@ -166,20 +201,9 @@ def l_x_distance(suffixes1, suffixes2, chi, g):
         The Lp-infinity distance between the two sets of suffixes.
     """
     # Convert suffixes to frequency distributions
-    probs1 = defaultdict(int)
-    probs2 = defaultdict(int)
     arrayg = list(g)
-    for s in suffixes1:
-        probs1[tuple(s)] += 1
-    for s in suffixes2:
-        probs2[tuple(s)] += 1
-    for key in probs1:
-        probs1[key] /= len(suffixes1)
-    for key in probs2:
-        probs2[key] /= len(suffixes2)
     max_diff = 0
     args = [probs1,probs2]
-    func = partial(getprobs, arrayg, chi)
     results = [getprobs(arrayg, chi, x) for x in args]
     # for p, o, c in zip(results[0], results[1], chi[0]):
     #     print(p, o, arrayg[c[0]])
@@ -205,15 +229,14 @@ def getprobs(arrayg, chi, probs_i):
 
 
 if __name__ == "__main__":
-    horizon = 5  # Maximum length of an episode
+    horizon = 15  # Maximum length of an episode
     delta = 0.01  # Failure probability
 
     dataset = []
-    with open('tmaze25x5x1.txt', 'r') as f:
+    with open('data\\minihallx15.txt', 'r') as f:
         for line in f:
             episode = eval(line.strip())
-            for i in range(len(episode)-horizon):
-                dataset.append(episode[i:i+horizon+1])
+            dataset.append(episode[:horizon+1])
 
     # actions = [0, 1]  # Two possible actions
     # observations = ['x', 'y']  # Three possible observations
