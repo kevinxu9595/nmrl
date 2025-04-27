@@ -1,6 +1,6 @@
 import random
 
-class TMaze:
+class Corridor:
     def __init__(self, length, horizon = 0, restricted = 0):
         self.length = length
         self.restricted = restricted
@@ -14,27 +14,21 @@ class TMaze:
         if restricted is not None:
             self.restricted = restricted
         self.t = 0
-        self.position = 1
-        self.goal_position = random.choice(['0', '1'])
+        self.position = (random.choice([0, 1]),0)
         self.done = False
-        return '011' if self.goal_position == '0' else '110'
+        return (self.position[0], self.position[1], 0)
 
     def step(self, action):
         if self.done:
             raise ValueError("Episode has finished. Please reset the environment.")
         
-        if action not in ['0', '1']:
-            raise ValueError("Invalid action. Valid actions are '0', '1'.")
+        if action not in ['a0', 'a1']:
+            raise ValueError("Invalid action. Valid actions are 'a0', 'a1'.")
         
         self.t += 1
 
         if self.position == self.length:
-            if self.goal_position == action:
-                reward = 4
-            else:
-                reward = -1
             self.done = True
-            return 'o0', reward, self.done
         
         reward = 0
 
@@ -59,35 +53,35 @@ class TMaze:
 
 
 def generate_data(length, horizon, restricted):
-    tmaze = TMaze(length=length, horizon=horizon, restricted=restricted)
+    corridor = Corridor(length=length, horizon=horizon, restricted=restricted)
     allrecords = []
     for i in range(20000):
-        initial_observation = tmaze.reset()
+        initial_observation = corridor.reset()
         #print("Initial Observation:", initial_observation)
         done = False
         total = 0
         record = [('a0', initial_observation, 0)]
         current_observation = initial_observation
         while not done:
-            if tmaze.restricted == 2:
+            if corridor.restricted == 2:
                 if current_observation != '010':
                     action = '1'
                 else:
                     action = random.choice(['0', '1'])
-            elif tmaze.restricted == 1:
-                if tmaze.position == 1:
+            elif corridor.restricted == 1:
+                if corridor.position == 1:
                     action = '1'
                 else:
                     action = random.choice(['0', '1'])
-            observation, reward, done = tmaze.step(action)
+            observation, reward, done = corridor.step(action)
             current_observation = observation
             total += reward
-            #print(f"Action: {action}, Observation: {observation}, Reward: {reward}, Done: {done}, position: {tmaze.position}, total: {total}")
+            #print(f"Action: {action}, Observation: {observation}, Reward: {reward}, Done: {done}, position: {corridor.position}, total: {total}")
             record.append((action, observation, reward))
         print(record)
         allrecords.append(record)
 
-    with open('data\\tmaze2'+str(length)+'x'+str(horizon)+'x'+str(restricted)+'.txt', 'w') as f:
+    with open('data\\corridor2'+str(length)+'x'+str(horizon)+'x'+str(restricted)+'.txt', 'w') as f:
         for record in allrecords:
             f.write(f"{record}\n")
 
@@ -104,13 +98,13 @@ def evaluate_policy(length, horizon, restricted):
     policy_dict = {}
     for p in policy:
         policy_dict[(p[1], p[0])] = p[2]
-    
-    tmaze = TMaze(length=length, horizon=horizon, restricted=restricted)
+
+    corridor = Corridor(length=length, horizon=horizon, restricted=restricted)
     allrecords = []
     average = 0
     errors = 0
     for i in range(2000):
-        initial_observation = tmaze.reset()
+        initial_observation = corridor.reset()
         #print("Initial Observation:", initial_observation)
         state = 'u0'
         done = False
@@ -121,10 +115,10 @@ def evaluate_policy(length, horizon, restricted):
         while not done:
             try:
                 action = policy_dict[(state, str(t))]
-                observation, reward, done = tmaze.step(action)
+                observation, reward, done = corridor.step(action)
                 state = transitions_dict[(state, str((action, observation)))]
                 total += reward
-                #print(f"Action: {action}, Observation: {observation}, Reward: {reward}, Done: {done}, position: {tmaze.position}, total: {total}")
+                #print(f"Action: {action}, Observation: {observation}, Reward: {reward}, Done: {done}, position: {corridor.position}, total: {total}")
                 record.append((action, observation, reward))
 
                 if t == horizon:

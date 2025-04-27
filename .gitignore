@@ -1,0 +1,6 @@
+data
+outputs
+.vscode
+__pycache__
+.pytest_cache
+*.pyc

@@ -1,54 +1,74 @@
 import random
 
-class TMaze:
-    def __init__(self, length, horizon = 0, restricted = 0):
-        self.length = length
-        self.restricted = restricted
+class Cookie:
+    def __init__(self, horizon = 9):
         self.horizon = horizon
-        self.t = 0
         self.reset()
 
-    def reset(self, horizon = None, restricted = None):
-        if horizon is not None:
-            self.horizon = horizon
-        if restricted is not None:
-            self.restricted = restricted
+    def reset(self):
         self.t = 0
-        self.position = 1
-        self.goal_position = random.choice(['0', '1'])
+        self.position = 'w'
+        self.cookie = 'none'
         self.done = False
-        return '011' if self.goal_position == '0' else '110'
+        return self.position
+    
+    def get_possible_actions(self, observation):
+        match observation:
+            case 'w':
+                return ['l', 'r', 'u']
+            case 'r':
+                return ['d', 'p']
+            case 'b':
+                return ['r']
+            case 'g':
+                return ['l']
+            case 'b_c':
+                return ['r','e']
+            case 'g_c':
+                return ['l','e']
+                
 
     def step(self, action):
         if self.done:
             raise ValueError("Episode has finished. Please reset the environment.")
         
-        if action not in ['0', '1']:
-            raise ValueError("Invalid action. Valid actions are '0', '1'.")
+        if action not in ['l', 'r', 'u', 'd', 'p', 'e']: 
+            raise ValueError("Invalid action.")
         
         self.t += 1
-
-        if self.position == self.length:
-            if self.goal_position == action:
-                reward = 4
-            else:
-                reward = -1
-            self.done = True
-            return 'o0', reward, self.done
-        
         reward = 0
 
-        if (self.position == 1 and action == '0') or (self.position == self.length and action == '1'):
-            reward = -1
-        elif action == '1':
-            self.position += 1
-        elif action == '0':
-            self.position -= 1
-
-        if self.position == self.length:
-            observation = '010'
-        else:
-            observation = '101'
+        match self.position:
+            case 'w':
+                if action == 'l':
+                    self.position = 'b'
+                elif action == 'r':
+                    self.position = 'g'
+                elif action == 'u':
+                    self.position = 'r'
+            case 'r':
+                if action == 'd':
+                    self.position = 'w'
+                elif action == 'p':
+                    self.cookie = random.choice(['b_c', 'g_c'])
+            case 'b':
+                if self.cookie == 'b_c' and action == 'e':
+                    self.cookie = 'none'
+                    reward = 1
+                elif action == 'r':
+                    self.position = 'w'
+            case 'g':
+                if self.cookie == 'g_c' and action == 'e':
+                    self.cookie = 'none'
+                    reward = 1
+                elif action == 'l':
+                    self.position = 'w'
+        observation = self.position
+        if self.cookie == 'b_c' and self.position == 'b':
+            observation = 'b_c'
+        elif self.cookie == 'g_c' and self.position == 'g':
+            observation = 'g_c'
+                
 
         if self.horizon != 0:
             if self.horizon == self.t:
@@ -58,28 +78,20 @@ class TMaze:
         return observation, reward, self.done
 
 
-def generate_data(length, horizon, restricted):
-    tmaze = TMaze(length=length, horizon=horizon, restricted=restricted)
+def generate_data(horizon):
+    cookie = Cookie(horizon=horizon)
     allrecords = []
     for i in range(20000):
-        initial_observation = tmaze.reset()
+        initial_observation = cookie.reset()
         #print("Initial Observation:", initial_observation)
         done = False
         total = 0
         record = [('a0', initial_observation, 0)]
         current_observation = initial_observation
         while not done:
-            if tmaze.restricted == 2:
-                if current_observation != '010':
-                    action = '1'
-                else:
-                    action = random.choice(['0', '1'])
-            elif tmaze.restricted == 1:
-                if tmaze.position == 1:
-                    action = '1'
-                else:
-                    action = random.choice(['0', '1'])
-            observation, reward, done = tmaze.step(action)
+            actions = cookie.get_possible_actions(current_observation)
+            action = random.choice(actions)
+            observation, reward, done = cookie.step(action)
             current_observation = observation
             total += reward
             #print(f"Action: {action}, Observation: {observation}, Reward: {reward}, Done: {done}, position: {tmaze.position}, total: {total}")
@@ -87,16 +99,16 @@ def generate_data(length, horizon, restricted):
         print(record)
         allrecords.append(record)
 
-    with open('data\\tmaze2'+str(length)+'x'+str(horizon)+'x'+str(restricted)+'.txt', 'w') as f:
+    with open('data\\cookie'+'x'+str(horizon)+'.txt', 'w') as f:
         for record in allrecords:
             f.write(f"{record}\n")
 
-def evaluate_policy(length, horizon, restricted):
-    with open('states.txt', 'r') as f:
+def evaluate_policy(horizon):
+    with open('outputs\\cookie_states.txt', 'r') as f:
         states = [eval(line.strip()) for line in f.readlines()]
-    with open('transitions.txt', 'r') as f:
+    with open('outputs\\cookie_transitions.txt', 'r') as f:
         transitions = [eval(line.strip()) for line in f.readlines()]
-    with open('policy.txt', 'r') as f:
+    with open('outputs\\cookie_policy.txt', 'r') as f:
         policy = [eval(line.strip()) for line in f.readlines()]
     transitions_dict = {}
     for transition in transitions:
@@ -105,12 +117,12 @@ def evaluate_policy(length, horizon, restricted):
     for p in policy:
         policy_dict[(p[1], p[0])] = p[2]
     
-    tmaze = TMaze(length=length, horizon=horizon, restricted=restricted)
+    cookie = Cookie(horizon=horizon)
     allrecords = []
     average = 0
     errors = 0
     for i in range(2000):
-        initial_observation = tmaze.reset()
+        initial_observation = cookie.reset()
         #print("Initial Observation:", initial_observation)
         state = 'u0'
         done = False
@@ -121,7 +133,7 @@ def evaluate_policy(length, horizon, restricted):
         while not done:
             try:
                 action = policy_dict[(state, str(t))]
-                observation, reward, done = tmaze.step(action)
+                observation, reward, done = cookie.step(action)
                 state = transitions_dict[(state, str((action, observation)))]
                 total += reward
                 #print(f"Action: {action}, Observation: {observation}, Reward: {reward}, Done: {done}, position: {tmaze.position}, total: {total}")
@@ -140,11 +152,10 @@ def evaluate_policy(length, horizon, restricted):
     print(errors)
 
 
+
 # Example usage
 if __name__ == "__main__":
-    length = 5
-    horizon = 0
-    restricted = 1
-    generate_data(length, horizon, restricted)
+    horizon = 9
+    # generate_data(horizon)
 
-    evaluate_policy(length, horizon, restricted)
+    evaluate_policy(horizon)

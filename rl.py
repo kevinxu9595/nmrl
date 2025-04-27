@@ -1,7 +1,8 @@
 from adacth import adact_h
+settings = {"tmaze":"tmaze25x5x1", "cheese":"cheesex6", "cookie":"cookiex9", "minihall":"minihallx15"}
+horizons = {"tmaze":5, "cheese":6, "cookie":9, "minihall":15}
 
-
-def RegORL(dataset, epsilon, delta, actions, observations, rewards, horizon, upper=0):
+def RegORL(setting, dataset, epsilon, delta, actions, observations, rewards, horizon, upper=0):
     if upper == 0:
         upper = (len(actions)*len(observations))**horizon * 2
     random.shuffle(dataset)
@@ -10,12 +11,12 @@ def RegORL(dataset, epsilon, delta, actions, observations, rewards, horizon, upp
     d2 = dataset[split:]
     states, transitions = adact_h(d1, delta, horizon, actions, observations, rewards, chi_index=1)
 
-    with open('states.txt', 'w') as f:
+    with open(f'outputs\\{setting}_states.txt', 'w') as f:
         for statet in states:
             for state in statet:
                 f.write(f'"{state}"\n')
 
-    with open('transitions.txt', 'w') as f:
+    with open(f'outputs\\{setting}_transitions.txt', 'w') as f:
         for key, value in transitions.items():
             f.write(f'[\"{key[0]}\", \"{key[1]}\", \"{value}\"]\n')
 
@@ -30,7 +31,7 @@ def RegORL(dataset, epsilon, delta, actions, observations, rewards, horizon, upp
     d2_new = transform(d2, transitions)
     states = set().union(*states)
     policy = offlineRL(d2_new, epsilon, delta/2, states, actions, rewards, horizon)
-    with open('policy.txt', 'w') as f:
+    with open(f'outputs\\{setting}_policy.txt', 'w') as f:
         for h in policy:
             for s in policy[h]:
                 f.write(f'[\"{h}\", \"{s}\", \"{policy[h][s]}\"]\n')
@@ -42,13 +43,16 @@ def transform(dataset, transitions):
         new_episode = []
         state = 'u0'
         h = 0
-        for step in episode:
-            new_state = transitions[(state, (step[0], step[1]))]
-            new_step = (state, step[0], step[2], new_state)
-            new_episode.append(new_step)
-            state = new_state
-            h += 1
-        d.append(new_episode)
+        try:
+            for step in episode:
+                new_state = transitions[(state, (step[0], step[1]))]
+                new_step = (state, step[0], step[2], new_state)
+                new_episode.append(new_step)
+                state = new_state
+                h += 1
+            d.append(new_episode)
+        except KeyError:
+            print("KeyError:", state, h, step[0], step[1], step[2])
     return d
 
 
@@ -148,8 +152,6 @@ def VILCB(dataset, epsilon, delta, states, actions, rewards, H, c_b=0.5):
         for s in stateactions:
             for a in stateactions[s]:
                 key = (s, a)
-                if s == "((((('u0', '1', '110'), '1', '101'), '1', '101'), '1', '101'), '1', '010')":
-                    print(key,)
                 N_sa = counts.get(key, 0)
                 # Estimate expected value: sum_{s'} P_hat(s'|s,a) * V_{h+1}(s')
                 exp_val = sum(P_hat[key][s_next] * V[h+1][s_next] for s_next in P_hat[key])
@@ -158,15 +160,13 @@ def VILCB(dataset, epsilon, delta, states, actions, rewards, H, c_b=0.5):
                 var_val = variance_of_value(P_hat[key], V[h+1])
                 
                 # Use total count at step h in the log term (could be refined)
-                log_term = math.log(N* H / delta)
+                log_term = math.log(N* H / epsilon)
                 
-                if s == ((((('u0', '1', '110'), '1', '101'), '1', '101'), '1', '101'), '1', '010'):
-                    #print([(P_hat[key][s_next], V[h+1][s_next], s_next) for s_next in P_hat[key]])
-                    print(key, N_sa, exp_val, r[(s, a, h)], 'test')
-
                 if N_sa > 0:
                     penalty = math.sqrt(c_b * log_term * var_val / N_sa) + (c_b * H * log_term) / N_sa
                     # Clip penalty at H
+                    if penalty > H:
+                        print(penalty)
                     penalty = min(penalty, H)
                 else:
                     # No data for (s,a) at step h: set penalty high so that Q becomes 0.
@@ -199,12 +199,11 @@ def VILCB(dataset, epsilon, delta, states, actions, rewards, H, c_b=0.5):
     return policy
 
 if __name__ == "__main__":
-
-    horizon = 5  # Maximum length of an episode
     delta = 0.01  # Failure probability
-
+    setting = "cookie"  # Choose between "tmaze", "cheese", "cookie", "minihall"
+    horizon = horizons[setting]  # Horizon for the chosen setting
     dataset = []
-    with open('tmaze25x5x1.txt', 'r') as f:
+    with open(f'data\\{settings[setting]}.txt', 'r') as f:
         for line in f:
             episode = eval(line.strip())
             for i in range(len(episode)-horizon):
@@ -220,7 +219,7 @@ if __name__ == "__main__":
             rewards.add(step[2])
     print(actions, observations, rewards)
 
-    output = RegORL(dataset, 0.1, delta, actions, observations, rewards, horizon)
+    output = RegORL(setting, dataset, 0.1, delta, actions, observations, rewards, horizon)
     # for i in output:
     #     print(i)
     #     for j in output[i]:
